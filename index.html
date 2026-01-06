@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Prompt Cloud Gallery</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <!-- React and Babel for Browser Rendering -->
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body class="bg-slate-50">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect } = React;
+        
+        // --- Firebase Imports ---
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, addDoc, onSnapshot, query, orderBy } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Firebase Configuration (Using environment variables if available)
+        const firebaseConfig = JSON.parse(__firebase_config);
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'prompt-gallery-v1';
+
+        // --- Components ---
+        
+        const PromptCard = ({ title, prompt, imageUrl, model, iconName }) => {
+            const [copied, setCopied] = useState(false);
+            const Icon = lucide[iconName] || lucide.Sparkles;
+
+            const handleCopy = () => {
+                const textArea = document.createElement("textarea");
+                textArea.value = prompt;
+                document.body.appendChild(textArea);
+                textArea.select();
+                document.execCommand('copy');
+                setCopied(true);
+                setTimeout(() => setCopied(false), 2000);
+                document.body.removeChild(textArea);
+            };
+
+            const modelStyles = {
+                'Gemini': 'bg-blue-100 text-blue-700 border-blue-200 border-l-blue-500',
+                'ChatGPT': 'bg-emerald-100 text-emerald-700 border-emerald-200 border-l-emerald-500',
+                'Midjourney': 'bg-purple-100 text-purple-700 border-purple-200 border-l-purple-500'
+            };
+
+            return (
+                <div className="bg-white rounded-2xl overflow-hidden shadow-md hover:shadow-xl transition-all border border-slate-100 flex flex-col h-full group">
+                    <div className="h-40 bg-slate-200 relative overflow-hidden">
+                        {imageUrl ? (
+                            <img src={imageUrl} alt={title} className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-110" />
+                        ) : (
+                            <div className="w-full h-full bg-gradient-to-br from-slate-700 to-slate-900 flex items-center justify-center">
+                                <i data-lucide={iconName} className="text-white w-12 h-12 opacity-50"></i>
+                            </div>
+                        )}
+                        <div className="absolute top-3 right-3">
+                            <span className={`text-[10px] font-bold px-2 py-1 rounded-md border shadow-sm ${modelStyles[model] || 'bg-slate-100'}`}>
+                                {model}
+                            </span>
+                        </div>
+                    </div>
+                    <div className="p-5 flex flex-col flex-grow">
+                        <h3 className="text-lg font-bold text-slate-800 mb-2">{title}</h3>
+                        <div className="bg-slate-50 p-3 rounded-lg border border-slate-100 mb-4 flex-grow relative">
+                            <p className="text-slate-600 text-sm italic line-clamp-3">"{prompt}"</p>
+                        </div>
+                        <button onClick={handleCopy} className={`w-full py-2.5 rounded-xl font-bold flex items-center justify-center gap-2 transition-all ${copied ? 'bg-green-500 text-white' : 'bg-slate-900 text-white hover:bg-slate-800'}`}>
+                            {copied ? <><i data-lucide="check" className="w-4 h-4"></i>Copied!</> : <><i data-lucide="copy" className="w-4 h-4"></i>Copy</>}
+                        </button>
+                    </div>
+                </div>
+            );
+        };
+
+        function App() {
+            const [prompts, setPrompts] = useState([]);
+            const [user, setUser] = useState(null);
+            const [isAdmin, setIsAdmin] = useState(false);
+            const [isModalOpen, setIsModalOpen] = useState(false);
+            const [loading, setLoading] = useState(true);
+            const [form, setForm] = useState({ title: '', prompt: '', imageUrl: '', model: 'Gemini' });
+
+            // 1. Auth Init
+            useEffect(() => {
+                const initAuth = async () => {
+                    try {
+                        await signInAnonymously(auth);
+                    } catch (e) { console.error("Auth failed", e); }
+                };
+                initAuth();
+                const unsub = onAuthStateChanged(auth, (u) => {
+                    setUser(u);
+                });
+                return () => unsub();
+            }, []);
+
+            // 2. Fetch Data from Firestore
+            useEffect(() => {
+                if (!user) return;
+                const q = query(collection(db, 'artifacts', appId, 'public', 'data', 'prompts'));
+                const unsub = onSnapshot(q, (snapshot) => {
+                    const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                    // Simple sort in memory (Rule 2: No complex queries)
+                    setPrompts(data.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)));
+                    setLoading(false);
+                    setTimeout(() => lucide.createIcons(), 100);
+                }, (err) => {
+                    console.error("Firestore error", err);
+                    setLoading(false);
+                });
+                return () => unsub();
+            }, [user]);
+
+            const handleLogin = () => {
+                const pass = prompt("Developer Password:");
+                if (pass === "admin123") {
+                    setIsAdmin(true);
+                    setIsModalOpen(true);
+                } else if (pass !== null) {
+                    alert("Wrong Password!");
+                }
+            };
+
+            const handleSubmit = async (e) => {
+                e.preventDefault();
+                if (!isAdmin || !user) return;
+                
+                const iconMap = { 'Gemini': 'BrainCircuit', 'ChatGPT': 'Bot', 'Midjourney': 'Palette' };
+                
+                try {
+                    await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'prompts'), {
+                        ...form,
+                        iconName: iconMap[form.model] || 'Sparkles',
+                        createdAt: Date.now(),
+                        creatorId: user.uid
+                    });
+                    setForm({ title: '', prompt: '', imageUrl: '', model: 'Gemini' });
+                    setIsModalOpen(false);
+                } catch (e) {
+                    alert("Error saving prompt.");
+                }
+            };
+
+            return (
+                <div className="min-h-screen pb-12">
+                    <header className="bg-white border-b border-slate-200 py-12 px-6 text-center shadow-sm">
+                        <div className="max-w-4xl mx-auto">
+                            <h1 className="text-4xl font-extrabold text-slate-900 mb-4 tracking-tight">
+                                Prompt <span className="text-indigo-600">Cloud</span> Gallery
+                            </h1>
+                            <p className="text-slate-500 text-lg mb-8">Save and access your AI prompts from anywhere.</p>
+                            
+                            <button 
+                                onClick={isAdmin ? () => setIsModalOpen(true) : handleLogin}
+                                className={`flex items-center gap-2 mx-auto px-8 py-3 rounded-full font-bold shadow-lg transition-all hover:-translate-y-1 ${isAdmin ? 'bg-indigo-600 text-white' : 'bg-slate-900 text-white'}`}
+                            >
+                                <i data-lucide={isAdmin ? "plus" : "lock"} className="w-5 h-5"></i>
+                                {isAdmin ? "Add New Prompt" : "Developer Login"}
+                            </button>
+                        </div>
+                    </header>
+
+                    <main className="max-w-7xl mx-auto px-6 py-12">
+                        {loading ? (
+                            <div className="flex justify-center py-20 text-slate-400">Loading Cloud Data...</div>
+                        ) : prompts.length === 0 ? (
+                            <div className="text-center py-20 text-slate-400 border-2 border-dashed border-slate-200 rounded-3xl">
+                                No prompts yet. Developer can add the first one!
+                            </div>
+                        ) : (
+                            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-8">
+                                {prompts.map(p => <PromptCard key={p.id} {...p} />)}
+                            </div>
+                        )}
+                    </main>
+
+                    {/* Modal */}
+                    {isModalOpen && (
+                        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+                            <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md p-6 border border-slate-100">
+                                <div className="flex justify-between items-center mb-6">
+                                    <h2 className="text-xl font-bold">New Cloud Prompt</h2>
+                                    <button onClick={() => setIsModalOpen(false)} className="p-2 hover:bg-slate-100 rounded-full"><i data-lucide="x"></i></button>
+                                </div>
+                                <form onSubmit={handleSubmit} className="space-y-4">
+                                    <input required placeholder="Title" className="w-full p-3 bg-slate-50 border rounded-xl outline-none focus:ring-2 focus:ring-indigo-200" value={form.title} onChange={e => setForm({...form, title: e.target.value})} />
+                                    <select className="w-full p-3 bg-slate-50 border rounded-xl outline-none" value={form.model} onChange={e => setForm({...form, model: e.target.value})}>
+                                        <option>Gemini</option>
+                                        <option>ChatGPT</option>
+                                        <option>Midjourney</option>
+                                    </select>
+                                    <textarea required placeholder="Prompt Text" rows="4" className="w-full p-3 bg-slate-50 border rounded-xl outline-none focus:ring-2 focus:ring-indigo-200" value={form.prompt} onChange={e => setForm({...form, prompt: e.target.value})} />
+                                    <input placeholder="Image URL (Optional)" className="w-full p-3 bg-slate-50 border rounded-xl outline-none focus:ring-2 focus:ring-indigo-200" value={form.imageUrl} onChange={e => setForm({...form, imageUrl: e.target.value})} />
+                                    <button type="submit" className="w-full bg-indigo-600 text-white py-4 rounded-2xl font-bold shadow-lg shadow-indigo-100 hover:bg-indigo-700">Save to Cloud</button>
+                                </form>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+        
+        // Initial icons
+        setTimeout(() => lucide.createIcons(), 500);
+    </script>
+</body>
+</html>
